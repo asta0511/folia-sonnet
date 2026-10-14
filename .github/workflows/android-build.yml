@@ -1,0 +1,228 @@
+name: Android APK
+
+# 手动触发，或当本文件变动时触发。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/android-build.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+  JAVA_VERSION: '21'
+
+jobs:
+  # ---------------------------------------------------------------- debug APK
+  debug:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
+          sdkmanager --list_installed || true
+
+      - name: Write .env.local
+        run: |
+          {
+            echo "VITE_NETEASE_API_BASE=${{ vars.VITE_NETEASE_API_BASE }}"
+            echo "VITE_KUGOU_API_BASE=${{ vars.VITE_KUGOU_API_BASE }}"
+            echo "VITE_FOLIA_API_BASE=${{ vars.VITE_FOLIA_API_BASE }}"
+            echo "VITE_AI_PROVIDER=${{ vars.VITE_AI_PROVIDER }}"
+          } > .env.local
+          cat .env.local
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build web assets (capacitor target)
+        run: npm run build:capacitor
+
+      - name: Capacitor sync (android)
+        run: npx cap sync android
+
+      - name: Gradle assembleDebug
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          find android/app/build/outputs -name '*.apk' -exec cp -v {} out/ \;
+          ls -lh out
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: folia-apk-debug
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # -------------------------------------------------------------- release APK
+  release:
+    name: Build signed release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
+
+      # 复用同一把签名密钥，保证后续版本可以覆盖安装升级。
+      - name: Restore release keystore
+        id: keystore
+        uses: actions/cache/restore@v4
+        with:
+          path: android/folia-release.keystore
+          key: folia-android-release-keystore-v1
+
+      - name: Generate release keystore
+        if: steps.keystore.outputs.cache-hit != 'true'
+        run: |
+          keytool -genkeypair -v \
+            -keystore android/folia-release.keystore \
+            -storetype PKCS12 \
+            -alias folia \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass folia2026 -keypass folia2026 \
+            -dname "CN=Folia Android, OU=Personal, O=Personal, L=Unknown, ST=Unknown, C=CN"
+
+      - name: Save release keystore
+        if: steps.keystore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: android/folia-release.keystore
+          key: folia-android-release-keystore-v1
+
+      - name: Write keystore.properties
+        run: |
+          cat > android/keystore.properties <<'EOF'
+          storeFile=../folia-release.keystore
+          storePassword=folia2026
+          keyAlias=folia
+          keyPassword=folia2026
+          EOF
+          cat android/keystore.properties
+
+      - name: Write .env.local
+        run: |
+          {
+            echo "VITE_NETEASE_API_BASE=${{ vars.VITE_NETEASE_API_BASE }}"
+            echo "VITE_KUGOU_API_BASE=${{ vars.VITE_KUGOU_API_BASE }}"
+            echo "VITE_FOLIA_API_BASE=${{ vars.VITE_FOLIA_API_BASE }}"
+            echo "VITE_AI_PROVIDER=${{ vars.VITE_AI_PROVIDER }}"
+          } > .env.local
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build web assets (capacitor target)
+        run: npm run build:capacitor
+
+      - name: Capacitor sync (android)
+        run: npx cap sync android
+
+      - name: Gradle assembleRelease
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          find android/app/build/outputs -name '*.apk' -exec cp -v {} out/ \;
+          ls -lh out
+
+      - name: Upload release APK + keystore
+        uses: actions/upload-artifact@v4
+        with:
+          name: folia-apk-release
+          path: |
+            out/*.apk
+            android/folia-release.keystore
+          if-no-files-found: error
+          retention-days: 30
+
+  # ----------------------------------------------------------- publish release
+  publish:
+    name: Publish APKs
+    runs-on: ubuntu-latest
+    needs: [debug, release]
+    if: always() && needs.debug.result == 'success'
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: folia-apk-*
+          path: out
+          merge-multiple: true
+
+      - name: List files
+        run: ls -lh out
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="apk-$(date -u +%Y%m%d-%H%M%S)"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Folia Android APK $TAG" \
+            --notes "Folia 安卓版自动构建产物。
+
+          - app-debug.apk / app-release.apk：可直接侧载安装（Android 7.0+ / minSdk 24）。
+          - folia-release.keystore：签名密钥，请自行妥善保管，后续版本升级需要同一把密钥。
+
+          基于 chthollyphile/folia-sonnet（Folia 0.6.7 + Capacitor），非官方 Android 客户端。" \
+            out/*.apk out/*.keystore
