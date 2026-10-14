@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: android-apk-${{ github.ref }}
@@ -41,13 +42,20 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
+      # 默认 packages 值为 "tools platform-tools"，但 Google 已从 SDK 源移除 `tools` 包，
+      # sdkmanager 会以 "Failed to find package 'tools'" 退出 1，因此这里显式收窄。
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         run: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
+          sdkmanager "platform-tools" || true
+          sdkmanager "platforms;android-36" || true
+          sdkmanager "platforms;android-36.1" || true
+          sdkmanager "build-tools;36.0.0" || true
           sdkmanager --list_installed || true
 
       - name: Write .env.local
@@ -85,7 +93,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: folia-apk-debug
-          path: out/*.apk
+          path: out/*
           if-no-files-found: error
           retention-days: 30
 
@@ -112,11 +120,16 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         run: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
+          sdkmanager "platform-tools" || true
+          sdkmanager "platforms;android-36" || true
+          sdkmanager "platforms;android-36.1" || true
+          sdkmanager "build-tools;36.0.0" || true
 
       # 复用同一把签名密钥，保证后续版本可以覆盖安装升级。
       - name: Restore release keystore
@@ -146,12 +159,11 @@ jobs:
 
       - name: Write keystore.properties
         run: |
-          cat > android/keystore.properties <<'EOF'
-          storeFile=../folia-release.keystore
-          storePassword=folia2026
-          keyAlias=folia
-          keyPassword=folia2026
-          EOF
+          printf '%s\n' \
+            'storeFile=../folia-release.keystore' \
+            'storePassword=folia2026' \
+            'keyAlias=folia' \
+            'keyPassword=folia2026' > android/keystore.properties
           cat android/keystore.properties
 
       - name: Write .env.local
@@ -178,19 +190,18 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Collect APK
+      - name: Collect APK + keystore
         run: |
           mkdir -p out
           find android/app/build/outputs -name '*.apk' -exec cp -v {} out/ \;
+          cp -v android/folia-release.keystore out/
           ls -lh out
 
       - name: Upload release APK + keystore
         uses: actions/upload-artifact@v4
         with:
           name: folia-apk-release
-          path: |
-            out/*.apk
-            android/folia-release.keystore
+          path: out/*
           if-no-files-found: error
           retention-days: 30
 
@@ -219,10 +230,5 @@ jobs:
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --title "Folia Android APK $TAG" \
-            --notes "Folia 安卓版自动构建产物。
-
-          - app-debug.apk / app-release.apk：可直接侧载安装（Android 7.0+ / minSdk 24）。
-          - folia-release.keystore：签名密钥，请自行妥善保管，后续版本升级需要同一把密钥。
-
-          基于 chthollyphile/folia-sonnet（Folia 0.6.7 + Capacitor），非官方 Android 客户端。" \
+            --generate-notes \
             out/*.apk out/*.keystore
