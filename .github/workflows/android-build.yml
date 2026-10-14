@@ -90,12 +90,23 @@ jobs:
 
       - name: Verify web env injection
         run: |
+          fail=0
           if grep -rlq "wyymusicapi" dist/ 2>/dev/null; then
-            echo "NETEASE_INJECT_OK"
+            echo "OK   netease api"
           else
-            echo "NETEASE_NOT_FOUND"
-            exit 1
+            echo "MISS netease api"; fail=1
           fi
+          if grep -rlq "folia.789511.xyz" dist/ 2>/dev/null; then
+            echo "OK   folia api base"
+          else
+            echo "MISS folia api base"; fail=1
+          fi
+          if grep -rlq '"openai"' dist/ 2>/dev/null; then
+            echo "OK   ai provider flag"
+          else
+            echo "WARN ai provider flag not found (non-fatal)"
+          fi
+          exit $fail
 
       - name: Capacitor sync (android)
         run: npx cap sync android
@@ -219,12 +230,23 @@ jobs:
 
       - name: Verify web env injection
         run: |
+          fail=0
           if grep -rlq "wyymusicapi" dist/ 2>/dev/null; then
-            echo "NETEASE_INJECT_OK"
+            echo "OK   netease api"
           else
-            echo "NETEASE_NOT_FOUND"
-            exit 1
+            echo "MISS netease api"; fail=1
           fi
+          if grep -rlq "folia.789511.xyz" dist/ 2>/dev/null; then
+            echo "OK   folia api base"
+          else
+            echo "MISS folia api base"; fail=1
+          fi
+          if grep -rlq '"openai"' dist/ 2>/dev/null; then
+            echo "OK   ai provider flag"
+          else
+            echo "WARN ai provider flag not found (non-fatal)"
+          fi
+          exit $fail
 
       - name: Capacitor sync (android)
         run: npx cap sync android
