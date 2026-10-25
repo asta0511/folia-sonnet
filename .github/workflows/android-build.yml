@@ -154,6 +154,14 @@ jobs:
           grep -rlq "folia_site_defaults_startup_v1" dist/ && echo "OK   首启引导已关闭" || echo "WARN 未找到首启引导标记"
           exit $fail
 
+      # @capacitor/cli 用 require('typescript') 去转译 .ts 配置，而上游依赖是 TypeScript 7，
+      # 其 CommonJS 枚举已不可用（TypeError: Cannot read properties of undefined (reading 'CommonJS')），
+      # 因此改用等价的 capacitor.config.json；.ts 版本仅作参考保留在仓库里。
+      - name: Use JSON Capacitor config
+        run: |
+          rm -f capacitor.config.ts
+          cat capacitor.config.json
+
       - name: Capacitor sync (android)
         run: npx cap sync android
 
