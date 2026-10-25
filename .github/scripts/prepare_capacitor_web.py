@@ -2,10 +2,11 @@
 """把 folia-major 的网页层改造成 Capacitor(Android) 构建目标。
 
 CI 里在「用最新网页层覆盖工程」之后调用：
-  python3 .github/scripts/prepare_capacitor_web.py /tmp/sonnet-package.json
+  python3 .github/scripts/prepare_capacitor_web.py /tmp/sonnet-package.json /tmp/web
 
 做两件事：
-1. 以 folia-major 的 package.json 为基准，合并 Capacitor 相关依赖与构建脚本；
+1. 以 **folia-major 的 package.json** 为基准（网页层依赖），合并 Capacitor 相关依赖与构建脚本；
+   基准必须用网页层的，否则依赖版本还是 sonnet 内嵌的旧版（v0.6.7），缺 pinyin-pro 等新依赖；
 2. 生成 vite.config.capacitor.ts：base 改为相对路径、去掉 PWA 插件
    （WebView 里不需要 Service Worker，且它会把旧产物缓存住）。
 """
@@ -52,8 +53,8 @@ export default async function capacitorConfig(env: any) {
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: prepare_capacitor_web.py <sonnet-package.json>", file=sys.stderr)
+    if len(argv) != 3:
+        print("usage: prepare_capacitor_web.py <sonnet-package.json> <web-layer-dir>", file=sys.stderr)
         return 2
 
     sonnet_pkg = json.loads(pathlib.Path(argv[1]).read_text(encoding="utf-8"))
@@ -66,7 +67,9 @@ def main(argv: list[str]) -> int:
         print("ERROR: 没有从 sonnet 的 package.json 里读到 Capacitor 依赖", file=sys.stderr)
         return 1
 
-    pkg = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    web_pkg_path = pathlib.Path(argv[2]) / "package.json"
+    pkg = json.loads(web_pkg_path.read_text(encoding="utf-8"))
+
     dev_deps = pkg.setdefault("devDependencies", {})
     dev_deps.update(capacitor_deps)
     for name in DROP_DEV_DEPENDENCIES:
