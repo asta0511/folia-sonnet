@@ -14,10 +14,41 @@ CI 里在「用最新网页层覆盖工程」之后调用：
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 
 ROOT = pathlib.Path(".")
+
+DEFAULT_FOLIA_API_BASE = "https://folia.789511.xyz/api"
+
+# APK 里页面的 Origin 是 https://localhost，而上游把主题生成 / 歌词分词 / 歌词代理写成相对路径
+# （/api/...）；不重写就会打到 WebView 自己的本地服务上（404）。runtime-config.js 在 index.html
+# 里先于应用代码加载，正好用来装这个改写。上游只在这里放 aiProvider，我们顺手接管 fetch。
+RUNTIME_CONFIG_TEMPLATE = """// 由 .github/scripts/prepare_capacitor_web.py 生成，勿手工编辑。
+window.__FOLIA_RUNTIME_CONFIG__ = window.__FOLIA_RUNTIME_CONFIG__ || {};
+(function () {
+  var base = '__API_BASE__';
+  if (!base) return;
+  var original = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      if (typeof input === 'string' && input.indexOf('/api/') === 0) {
+        // '/api/xxx' -> '<base>/xxx'
+        input = base + input.slice(4);
+      } else if (input && typeof input.url === 'string') {
+        var prefix = location.origin + '/api/';
+        if (input.url.indexOf(prefix) === 0) {
+          input = new Request(base + input.url.slice(prefix.length - 1), input);
+        }
+      }
+    } catch (error) {
+      /* 改写失败就用原请求，不在这里阻断 */
+    }
+    return original.call(this, input, init);
+  };
+})();
+"""
 
 CAPACITOR_SCRIPTS = {
     "build:capacitor": (
@@ -82,9 +113,24 @@ def main(argv: list[str]) -> int:
     )
     (ROOT / "vite.config.capacitor.ts").write_text(VITE_CONFIG_CAPACITOR, encoding="utf-8")
 
+    api_base = (os.environ.get("VITE_FOLIA_API_BASE") or DEFAULT_FOLIA_API_BASE).rstrip("/")
+    runtime_config = ROOT / "public" / "runtime-config.js"
+    runtime_config.parent.mkdir(parents=True, exist_ok=True)
+    runtime_config.write_text(
+        RUNTIME_CONFIG_TEMPLATE.replace("__API_BASE__", api_base), encoding="utf-8"
+    )
+
+    # @capacitor/cli 用 require('typescript') 转译 .ts 配置，而网页层的依赖是 TypeScript 7，
+    # 其 ModuleKind 已不可用（TypeError: reading 'CommonJS'）。有 JSON 版就删掉 .ts，让 CLI 走 JSON。
+    ts_config = ROOT / "capacitor.config.ts"
+    if ts_config.exists() and (ROOT / "capacitor.config.json").exists():
+        ts_config.unlink()
+        print("capacitor config  : 删除 capacitor.config.ts（改用 .json）")
+
     print(f"web layer version : {pkg.get('version')}")
     print(f"capacitor deps    : {', '.join(sorted(capacitor_deps))}")
     print(f"dropped devDeps   : {', '.join(DROP_DEV_DEPENDENCIES)}")
+    print(f"api base (shim)   : {api_base}")
     return 0
 
 
