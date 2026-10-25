@@ -116,15 +116,12 @@ jobs:
         run: npm install --no-audit --no-fund
 
       # 用用户提供的插画重新生成全部启动器图标与启动图。
+      # runner 上没有 ImageMagick，用 @capacitor/assets 自带的 sharp 做尺寸归一。
       - name: Generate launcher icons from custom artwork
         run: |
           set -euo pipefail
-          IM="$(command -v magick || command -v convert)"
           mkdir -p .ci-assets
-          "$IM" android/icon-source/app-icon.jpg \
-            -background white -alpha remove -alpha off \
-            -resize 1024x1024^ -gravity center -extent 1024x1024 \
-            .ci-assets/logo.png
+          node .github/scripts/make_icon.cjs android/icon-source/app-icon.jpg .ci-assets/logo.png
           cp android/img/splash-light.png .ci-assets/splash.png
           cp android/img/splash-dark.png .ci-assets/splash-dark.png
           npx capacitor-assets generate --android --assetPath .ci-assets \
@@ -133,6 +130,7 @@ jobs:
             --splashBackgroundColor '#efedf8' \
             --splashBackgroundColorDark '#11142b'
           ls -lh android/app/src/main/res/mipmap-xxxhdpi/
+          ls -lh android/app/src/main/res/mipmap-anydpi-v26/
 
       # process.env 里的 VITE_* 优先级高于 .env 文件，直接以 env 注入最稳。
       - name: Build web assets (capacitor target)
