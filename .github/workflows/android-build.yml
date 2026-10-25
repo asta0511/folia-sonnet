@@ -1,12 +1,22 @@
 name: Android APK
 
-# 手动触发，或当本文件变动时触发。
+# 手动触发，或本文件变动时触发。
+#
+# 构建方式：不再使用 folia-sonnet 内嵌的旧前端（v0.6.7），而是在 CI 里
+# 拉取 folia-major 的最新网页层覆盖进来，再按 Capacitor 目标打包。
+# 这样 APK 与线上站点同源同设置（莫奈歌词样式、Hi-Res、无首启引导等）。
 on:
   workflow_dispatch:
+    inputs:
+      web_ref:
+        description: '网页层分支或 tag（asta0511/folia-major）'
+        required: true
+        default: 'main'
   push:
     branches: [main]
     paths:
       - '.github/workflows/android-build.yml'
+      - '.github/scripts/prepare_capacitor_web.py'
 
 permissions:
   contents: write
@@ -19,13 +29,13 @@ concurrency:
 env:
   NODE_VERSION: '24'
   JAVA_VERSION: '21'
+  WEB_REPO: 'asta0511/folia-major'
 
 jobs:
-  # ---------------------------------------------------------------- debug APK
-  debug:
-    name: Build debug APK
+  build:
+    name: Build APKs
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,7 +44,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
 
       - name: Setup JDK
         uses: actions/setup-java@v4
@@ -45,7 +54,7 @@ jobs:
       # 默认 packages 值为 "tools platform-tools"，但 Google 已从 SDK 源移除 `tools` 包，
       # sdkmanager 会以 "Failed to find package 'tools'" 退出 1，因此这里显式收窄。
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: actions/setup-android@v3
         with:
           packages: 'platform-tools'
 
@@ -58,28 +67,67 @@ jobs:
           sdkmanager "build-tools;36.0.0" || true
           sdkmanager --list_installed || true
 
-      - name: Write .env.local
+      # 换成最新网页层之前先留一份 sonnet 自己的 package.json（里面有 Capacitor 依赖）。
+      - name: Keep sonnet package.json
+        run: cp package.json /tmp/sonnet-package.json
+
+      - name: Fetch latest web layer
+        env:
+          WEB_REF: ${{ github.event.inputs.web_ref || 'main' }}
         run: |
-          {
-            echo "VITE_NETEASE_API_BASE=${{ vars.VITE_NETEASE_API_BASE }}"
-            echo "VITE_KUGOU_API_BASE=${{ vars.VITE_KUGOU_API_BASE }}"
-            echo "VITE_FOLIA_API_BASE=${{ vars.VITE_FOLIA_API_BASE }}"
-            echo "VITE_AI_PROVIDER=${{ vars.VITE_AI_PROVIDER }}"
-          } > .env.local
-          cat .env.local
+          set -euo pipefail
+          URL="https://codeload.github.com/${WEB_REPO}/tar.gz/refs/heads/${WEB_REF}"
+          # tag 形式的 ref 走另一条路径，失败时回退。
+          curl -fsSL --retry 3 -o /tmp/web.tar.gz "$URL" \
+            || curl -fsSL --retry 3 -o /tmp/web.tar.gz \
+                 "https://codeload.github.com/${WEB_REPO}/tar.gz/refs/tags/${WEB_REF}"
+          mkdir -p /tmp/web
+          tar -xzf /tmp/web.tar.gz -C /tmp/web --strip-components=1
+          echo "web layer version: $(node -p "require('/tmp/web/package.json').version")"
+          echo "web layer files  : $(find /tmp/web -type f | wc -l)"
+
+      # 用上游网页层覆盖工程，但保留安卓工程、Capacitor 配置、签名密钥与构建脚本。
+      - name: Overlay web layer onto the Android project
+        run: |
+          set -euo pipefail
+          rsync -a \
+            --exclude '.git' \
+            --exclude 'android' \
+            --exclude '.github' \
+            --exclude 'package.json' \
+            --exclude 'package-lock.json' \
+            --exclude 'capacitor.config.ts' \
+            --exclude 'scripts' \
+            /tmp/web/ ./
+          echo "--- 覆盖后的 src 版本标记 ---"
+          grep -n "DEFAULT_VISUALIZER_MODE" src/types/visualizerModes.ts | head -2 || true
+
+      - name: Prepare Capacitor build target
+        run: python3 .github/scripts/prepare_capacitor_web.py /tmp/sonnet-package.json
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
-      - name: Debug env state
+      # 用用户提供的插画重新生成全部启动器图标与启动图。
+      - name: Generate launcher icons from custom artwork
         run: |
-          echo "--- .env.local (after npm ci) ---"
-          cat -A .env.local 2>/dev/null || echo "MISSING"
-          echo "--- process env VITE_* ---"
-          env | grep '^VITE_' || echo "(none)"
+          set -euo pipefail
+          IM="$(command -v magick || command -v convert)"
+          mkdir -p .ci-assets
+          "$IM" android/icon-source/app-icon.jpg \
+            -background white -alpha remove -alpha off \
+            -resize 1024x1024^ -gravity center -extent 1024x1024 \
+            .ci-assets/logo.png
+          cp android/img/splash-light.png .ci-assets/splash.png
+          cp android/img/splash-dark.png .ci-assets/splash-dark.png
+          npx capacitor-assets generate --android --assetPath .ci-assets \
+            --iconBackgroundColor '#ffffff' \
+            --iconBackgroundColorDark '#ffffff' \
+            --splashBackgroundColor '#efedf8' \
+            --splashBackgroundColorDark '#11142b'
+          ls -lh android/app/src/main/res/mipmap-xxxhdpi/
 
-      # 直接以环境变量注入 Vite 构建；process.env 中的 VITE_* 优先级高于 .env 文件，
-      # 避免 .env.local 在某些 CI 环境下未被 Vite 读取导致配置丢失。
+      # process.env 里的 VITE_* 优先级高于 .env 文件，直接以 env 注入最稳。
       - name: Build web assets (capacitor target)
         env:
           VITE_NETEASE_API_BASE: ${{ vars.VITE_NETEASE_API_BASE }}
@@ -90,106 +138,27 @@ jobs:
 
       - name: Verify web env injection
         run: |
+          set -uo pipefail
           fail=0
-          if grep -rlq "wyymusicapi" dist/ 2>/dev/null; then
-            echo "OK   netease api"
-          else
-            echo "MISS netease api"; fail=1
-          fi
-          if grep -rlq "folia.789511.xyz" dist/ 2>/dev/null; then
-            echo "OK   folia api base"
-          else
-            echo "MISS folia api base"; fail=1
-          fi
-          if grep -rlq '"openai"' dist/ 2>/dev/null; then
-            echo "OK   ai provider flag"
-          else
-            echo "WARN ai provider flag not found (non-fatal)"
-          fi
+          check() {
+            if grep -rlq "$1" dist/ 2>/dev/null; then echo "OK   $2"; else echo "MISS $2"; fail=1; fi
+          }
+          check "folia.789511.xyz/api/netease" "netease api (site proxy)"
+          check "folia.789511.xyz/api" "folia api base"
+          check "openai" "ai provider flag"
+          echo "--- 站点定制是否进入产物 ---"
+          grep -rlq "folia_site_defaults_startup_v1" dist/ && echo "OK   首启引导已关闭" || echo "WARN 未找到首启引导标记"
           exit $fail
 
       - name: Capacitor sync (android)
         run: npx cap sync android
 
-      - name: Gradle assembleDebug
-        working-directory: android
+      # 每次构建递增 versionCode，保证能覆盖升级；versionName 由 package.json 提供。
+      - name: Bump versionCode
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
-
-      - name: Collect APK
-        run: |
-          mkdir -p out
-          find android/app/build/outputs -name '*.apk' -exec cp -v {} out/ \;
-          ls -lh out
-
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: folia-apk-debug
-          path: out/*
-          if-no-files-found: error
-          retention-days: 30
-
-  # -------------------------------------------------------------- release APK
-  release:
-    name: Build signed release APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Setup JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
-
-      - name: Install Android SDK packages
-        run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" || true
-          sdkmanager "platforms;android-36" || true
-          sdkmanager "platforms;android-36.1" || true
-          sdkmanager "build-tools;36.0.0" || true
-
-      # 复用同一把签名密钥，保证后续版本可以覆盖安装升级。
-      - name: Restore release keystore
-        id: keystore
-        uses: actions/cache/restore@v4
-        with:
-          path: android/folia-release.keystore
-          key: folia-android-release-keystore-v1
-
-      - name: Generate release keystore
-        if: steps.keystore.outputs.cache-hit != 'true'
-        run: |
-          keytool -genkeypair -v \
-            -keystore android/folia-release.keystore \
-            -storetype PKCS12 \
-            -alias folia \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass folia2026 -keypass folia2026 \
-            -dname "CN=Folia Android, OU=Personal, O=Personal, L=Unknown, ST=Unknown, C=CN"
-
-      - name: Save release keystore
-        if: steps.keystore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: android/folia-release.keystore
-          key: folia-android-release-keystore-v1
+          CODE=$((1000 + GITHUB_RUN_NUMBER))
+          sed -i -E "s/versionCode [0-9]+/versionCode ${CODE}/" android/app/build.gradle
+          grep -nE "versionCode|versionName" android/app/build.gradle
 
       - name: Write keystore.properties
         run: |
@@ -198,104 +167,39 @@ jobs:
             'storePassword=folia2026' \
             'keyAlias=folia' \
             'keyPassword=folia2026' > android/keystore.properties
-          cat android/keystore.properties
+          test -f android/folia-release.keystore && echo "keystore present"
 
-      - name: Write .env.local
-        run: |
-          {
-            echo "VITE_NETEASE_API_BASE=${{ vars.VITE_NETEASE_API_BASE }}"
-            echo "VITE_KUGOU_API_BASE=${{ vars.VITE_KUGOU_API_BASE }}"
-            echo "VITE_FOLIA_API_BASE=${{ vars.VITE_FOLIA_API_BASE }}"
-            echo "VITE_AI_PROVIDER=${{ vars.VITE_AI_PROVIDER }}"
-          } > .env.local
-
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund
-
-      - name: Debug env state
-        run: |
-          echo "--- .env.local (after npm ci) ---"
-          cat -A .env.local 2>/dev/null || echo "MISSING"
-          echo "--- process env VITE_* ---"
-          env | grep '^VITE_' || echo "(none)"
-
-      # 直接以环境变量注入 Vite 构建；process.env 中的 VITE_* 优先级高于 .env 文件。
-      - name: Build web assets (capacitor target)
-        env:
-          VITE_NETEASE_API_BASE: ${{ vars.VITE_NETEASE_API_BASE }}
-          VITE_KUGOU_API_BASE: ${{ vars.VITE_KUGOU_API_BASE }}
-          VITE_FOLIA_API_BASE: ${{ vars.VITE_FOLIA_API_BASE }}
-          VITE_AI_PROVIDER: ${{ vars.VITE_AI_PROVIDER }}
-        run: npm run build:capacitor
-
-      - name: Verify web env injection
-        run: |
-          fail=0
-          if grep -rlq "wyymusicapi" dist/ 2>/dev/null; then
-            echo "OK   netease api"
-          else
-            echo "MISS netease api"; fail=1
-          fi
-          if grep -rlq "folia.789511.xyz" dist/ 2>/dev/null; then
-            echo "OK   folia api base"
-          else
-            echo "MISS folia api base"; fail=1
-          fi
-          if grep -rlq '"openai"' dist/ 2>/dev/null; then
-            echo "OK   ai provider flag"
-          else
-            echo "WARN ai provider flag not found (non-fatal)"
-          fi
-          exit $fail
-
-      - name: Capacitor sync (android)
-        run: npx cap sync android
-
-      - name: Gradle assembleRelease
+      - name: Gradle assemble
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
 
-      - name: Collect APK + keystore
+      - name: Collect APKs
         run: |
+          set -euo pipefail
           mkdir -p out
           find android/app/build/outputs -name '*.apk' -exec cp -v {} out/ \;
           cp -v android/folia-release.keystore out/
           ls -lh out
 
-      - name: Upload release APK + keystore
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: folia-apk-release
+          name: folia-apk
           path: out/*
           if-no-files-found: error
           retention-days: 30
-
-  # ----------------------------------------------------------- publish release
-  publish:
-    name: Publish APKs
-    runs-on: ubuntu-latest
-    needs: [debug, release]
-    if: always() && needs.debug.result == 'success'
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: folia-apk-*
-          path: out
-          merge-multiple: true
-
-      - name: List files
-        run: ls -lh out
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           TAG="apk-$(date -u +%Y%m%d-%H%M%S)"
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
-            --title "Folia Android APK $TAG" \
+            --title "Folia Android $TAG" \
             --generate-notes \
             out/*.apk out/*.keystore
+          echo "release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
