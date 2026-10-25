@@ -54,7 +54,7 @@ jobs:
       # 默认 packages 值为 "tools platform-tools"，但 Google 已从 SDK 源移除 `tools` 包，
       # sdkmanager 会以 "Failed to find package 'tools'" 退出 1，因此这里显式收窄。
       - name: Setup Android SDK
-        uses: actions/setup-android@v3
+        uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools'
 
