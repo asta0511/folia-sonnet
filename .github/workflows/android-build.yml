@@ -105,6 +105,13 @@ jobs:
       - name: Prepare Capacitor build target
         run: python3 .github/scripts/prepare_capacitor_web.py /tmp/sonnet-package.json
 
+      # 上游 .npmrc 是 allow-remote=root，但叠加了 Capacitor 依赖后 npm 会把
+      # kugoumusicapi 这类远程 tarball 判成非 root 包而报 EALLOWREMOTE，这里放开。
+      - name: Allow remote dependencies
+        run: |
+          echo "allow-remote=all" >> .npmrc
+          cat .npmrc
+
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
