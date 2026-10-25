@@ -5,6 +5,8 @@ name: Android APK
 # 构建方式：不再使用 folia-sonnet 内嵌的旧前端（v0.6.7），而是在 CI 里
 # 拉取 folia-major 的最新网页层覆盖进来，再按 Capacitor 目标打包。
 # 这样 APK 与线上站点同源同设置（莫奈歌词样式、Hi-Res、无首启引导等）。
+# 默认走本地构建（apk-build/build_local.py），云端只在需要时手动点一次。
+# 所以这里**不挂 push 触发**，避免改个脚本文件就白跑一次。
 on:
   workflow_dispatch:
     inputs:
@@ -16,11 +18,6 @@ on:
         description: '应用版本号（留空则沿用网页层 package.json 的 version）'
         required: false
         default: ''
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/android-build.yml'
-      - '.github/scripts/prepare_capacitor_web.py'
 
 permissions:
   contents: write
