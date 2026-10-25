@@ -12,6 +12,10 @@ on:
         description: '网页层分支或 tag（asta0511/folia-major）'
         required: true
         default: 'main'
+      app_version:
+        description: '应用版本号（留空则沿用网页层 package.json 的 version）'
+        required: false
+        default: ''
   push:
     branches: [main]
     paths:
@@ -103,6 +107,21 @@ jobs:
 
       - name: Prepare Capacitor build target
         run: python3 .github/scripts/prepare_capacitor_web.py /tmp/sonnet-package.json /tmp/web
+
+      # versionName 由 android/app/build.gradle 直接读 package.json 的 version，
+      # 所以这里覆盖 package.json 即可让 APK 内部版本号变成指定的值（如 1.0.0）。
+      - name: Apply app version
+        if: ${{ github.event.inputs.app_version != '' }}
+        env:
+          APP_VERSION: ${{ github.event.inputs.app_version }}
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = process.env.APP_VERSION;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('app version ->', pkg.version);
+          "
 
       # 上游 .npmrc 是 allow-remote=root，但叠加了 Capacitor 依赖后 npm 会把
       # kugoumusicapi 这类远程 tarball 判成非 root 包而报 EALLOWREMOTE，这里放开。
