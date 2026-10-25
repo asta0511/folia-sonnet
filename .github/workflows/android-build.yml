@@ -95,7 +95,6 @@ jobs:
             --exclude 'android' \
             --exclude '.github' \
             --exclude 'package.json' \
-            --exclude 'package-lock.json' \
             --exclude 'capacitor.config.ts' \
             --exclude 'scripts' \
             /tmp/web/ ./
@@ -103,7 +102,7 @@ jobs:
           grep -n "DEFAULT_VISUALIZER_MODE" src/types/visualizerModes.ts | head -2 || true
 
       - name: Prepare Capacitor build target
-        run: python3 .github/scripts/prepare_capacitor_web.py /tmp/sonnet-package.json
+        run: python3 .github/scripts/prepare_capacitor_web.py /tmp/sonnet-package.json /tmp/web
 
       # 上游 .npmrc 是 allow-remote=root，但叠加了 Capacitor 依赖后 npm 会把
       # kugoumusicapi 这类远程 tarball 判成非 root 包而报 EALLOWREMOTE，这里放开。
